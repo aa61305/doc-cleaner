@@ -184,6 +184,7 @@ class App(tk.Tk):
         self.dpi_var = tk.IntVar(value=200)
         self.jpeg_var = tk.IntVar(value=88)
         self.strength_var = tk.StringVar(value="中度（推薦）")
+        self.grayscale_var = tk.BooleanVar(value=False)  # 省記憶體模式
 
         self.worker: Worker | None = None
         self.msgs: Queue = Queue()
@@ -240,6 +241,13 @@ class App(tk.Tk):
             frame_opts, from_=60, to=95, increment=1,
             textvariable=self.jpeg_var, width=5,
         ).grid(row=0, column=5, sticky="w")
+
+        # 第二列：省記憶體模式 (對 32-bit / 4GB 機器特別有用)
+        ttk.Checkbutton(
+            frame_opts,
+            text="省記憶體模式（強制灰階輸出，記憶體用量約 1/3，黑白文件無差別）",
+            variable=self.grayscale_var,
+        ).grid(row=1, column=0, columnspan=6, sticky="w", padx=6, pady=(2, 6))
 
         # 按鈕
         frame_btn = ttk.Frame(self)
@@ -335,11 +343,14 @@ class App(tk.Tk):
 
     def _make_config(self) -> CleanConfig:
         s = self.strength_var.get()
+        force_gray = bool(self.grayscale_var.get())
         if s.startswith("輕度"):
-            return CleanConfig(max_speck_area=4, max_speck_dim=2)
+            return CleanConfig(max_speck_area=4, max_speck_dim=2,
+                               force_grayscale=force_gray)
         if s.startswith("較強"):
-            return CleanConfig(max_speck_area=18, max_speck_dim=4)
-        return CleanConfig()  # 中度
+            return CleanConfig(max_speck_area=18, max_speck_dim=4,
+                               force_grayscale=force_gray)
+        return CleanConfig(force_grayscale=force_gray)  # 中度
 
     # --- 訊息處理 --- #
 
