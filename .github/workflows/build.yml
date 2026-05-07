@@ -11,21 +11,25 @@ defaults:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: windows-2019  # 用較舊 runner，產出的 exe 在老系統相容性更好
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Python 3.10
+      - name: Setup Python 3.10 (32-bit)
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+          architecture: 'x86'   # ← 關鍵：32-bit Python，產出的 exe 32/64 都能跑
 
       - name: Install dependencies
         shell: cmd
         run: |
           python -m pip install --upgrade pip
-          pip install PyMuPDF opencv-python numpy Pillow
+          pip install "numpy<2.0"
+          pip install "opencv-python==4.6.0.66"
+          pip install "PyMuPDF<1.25"
+          pip install "Pillow<11"
           pip install pyinstaller
 
       - name: Build EXE
