@@ -11,7 +11,7 @@ defaults:
 
 jobs:
   build:
-    runs-on: windows-2019  # 用較舊 runner，產出的 exe 在老系統相容性更好
+    runs-on: windows-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -20,7 +20,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-          architecture: 'x86'   # ← 關鍵：32-bit Python，產出的 exe 32/64 都能跑
+          architecture: 'x86'
 
       - name: Install dependencies
         shell: cmd
