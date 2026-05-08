@@ -63,9 +63,9 @@ class CleanConfig:
     iso_speck_max_dim: int = 10     # 200 DPI 下 10px → 600 DPI 下 ~30px
 
     # 第二階段：「靠近文字」的距離閾值 (px，200 DPI 基準，會 scale)
-    # 設小一點：標點符號通常 0-15 px 內就會緊鄰字元；
-    # 太大會讓 dilate 覆蓋整頁，所有候選都變「near-text」。
-    iso_near_text_dist: int = 8
+    # 5 = 600 DPI 下 ~15px。較積極清掉緊貼數字邊緣的髒點，
+    # 仍能保護真正緊鄰字邊 (5-15 px) 的中文標點。
+    iso_near_text_dist: int = 5
 
     # 基本 despeckle 的 dim 絕對上限 (保護細字細線)
     # 即使 auto-scale 也不會超過這個值
@@ -318,7 +318,9 @@ def rotate_image(img: np.ndarray, angle_deg: float, bg_value=255) -> np.ndarray:
     border = (bg_value, bg_value, bg_value) if img.ndim == 3 else bg_value
     return cv2.warpAffine(
         img, M, (w, h),
-        flags=cv2.INTER_CUBIC,  # 雙立方比較不會讓字邊緣鋸齒
+        # 改用 LINEAR：對 1-bit 輸出比 CUBIC 友善
+        # (CUBIC 產生較多反鋸齒灰階，閾值化後容易把字邊切細)
+        flags=cv2.INTER_LINEAR,
         borderMode=cv2.BORDER_CONSTANT,
         borderValue=border,
     )
