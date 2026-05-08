@@ -44,14 +44,32 @@ def _is_effectively_grayscale(img: Image.Image, sample_size: int = 64) -> bool:
     return max(int(rg.max()), int(gb.max()), int(rb.max())) <= 5
 
 
-def _to_bitonal_png_bytes(img: Image.Image) -> bytes:
-    """灰階/RGB 影像 Otsu 閾值化成 1-bit 黑白，存 PNG bytes。"""
+def _to_bitonal_png_bytes(img: Image.Image, dilate_iter: int = 1) -> bytes:
+    """
+    灰階/RGB 影像閾值化成 1-bit 黑白，存 PNG bytes。
+
+    流程：
+      1. Otsu 自動閾值化
+      2. 膨脹筆畫 (= 侵蝕白色背景) dilate_iter 次，
+         補回旋轉造成的筆畫變細
+
+    dilate_iter:
+      0 = 不補 (字會略細，但檔案最小)
+      1 = 補 1 px (預設，字保持原始厚度)
+      2 = 補 2 px (字會比原始略粗)
+    """
     if img.mode != "L":
         gray = img.convert("L")
     else:
         gray = img
     arr = np.asarray(gray, dtype=np.uint8)
     _, bw = cv2.threshold(arr, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+
+    if dilate_iter > 0:
+        # 侵蝕白色 = 黑色筆畫膨脹 1 px / iteration
+        kernel = np.ones((3, 3), dtype=np.uint8)
+        bw = cv2.erode(bw, kernel, iterations=dilate_iter)
+
     pil_1bit = Image.fromarray(bw, mode="L").convert("1")
     buf = io.BytesIO()
     pil_1bit.save(buf, format="PNG", optimize=True)
