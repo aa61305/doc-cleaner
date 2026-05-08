@@ -49,6 +49,28 @@ class CleanConfig:
     # 是否把內容水平置中 (掃描歪斜或邊緣留白不對稱時有用)
     center_horizontally: bool = False
 
+    # 是否啟用「離文字遠的孤立髒點清除」第二階段
+    # 用 dilate(LARGE 元件) 形成「near-text」區域，落在外面的小元件視為髒點
+    remove_isolated_specks: bool = True
+
+    # 第二階段：可疑髒點的尺寸範圍 (200 DPI 基準，會 scale)
+    # 同時滿足 area ≤ max_area 「且」 max(w,h) ≤ max_dim 才算候選；
+    # 兩條件需同時成立，任一超過就被當成「文字/線」自動保護。
+    # 設計原則：max_dim 守護「字一定比 speck 高」(細數字 1 在 200 DPI 下約 15px 高)
+    # 設計原則：max_area 守護不會把大塊的真實內容當成髒點
+    iso_speck_min_area: int = 8     # 200 DPI 下 8 → 600 DPI 下 ~70
+    iso_speck_max_area: int = 80    # 200 DPI 下 80 → 600 DPI 下 ~720 (約 30 px 半徑)
+    iso_speck_max_dim: int = 10     # 200 DPI 下 10px → 600 DPI 下 ~30px
+
+    # 第二階段：「靠近文字」的距離閾值 (px，200 DPI 基準，會 scale)
+    # 設小一點：標點符號通常 0-15 px 內就會緊鄰字元；
+    # 太大會讓 dilate 覆蓋整頁，所有候選都變「near-text」。
+    iso_near_text_dist: int = 8
+
+    # 基本 despeckle 的 dim 絕對上限 (保護細字細線)
+    # 即使 auto-scale 也不會超過這個值
+    max_speck_dim_cap: int = 4
+
 
 DEFAULT_CONFIG = CleanConfig()
 
@@ -101,7 +123,8 @@ def despeckle(img: np.ndarray, cfg: CleanConfig = DEFAULT_CONFIG) -> np.ndarray:
     h_img = img.shape[0]
     scale = max(1.0, h_img / 2200.0)
     eff_max_area = int(cfg.max_speck_area * scale * scale)  # 面積跟 scale 平方
-    eff_max_dim = int(cfg.max_speck_dim * scale)            # 邊長線性
+    # 邊長 scale 後仍受 max_speck_dim_cap 上限保護 (保護細字細線)
+    eff_max_dim = min(int(cfg.max_speck_dim * scale), cfg.max_speck_dim_cap)
 
     # 二值化：白底黑字 → 反轉成「黑底白前景」方便連通元件分析
     _, bw = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
@@ -130,6 +153,87 @@ def despeckle(img: np.ndarray, cfg: CleanConfig = DEFAULT_CONFIG) -> np.ndarray:
         out[mask > 0] = (255, 255, 255)
     else:
         out[mask > 0] = 255
+    return out
+
+
+# --------------------------- 孤立大髒點 (第二階段) --------------------------- #
+
+
+def remove_isolated_specks(img: np.ndarray, cfg: CleanConfig = DEFAULT_CONFIG) -> np.ndarray:
+    """
+    第二階段去髒：清除「離文字遠的孤立小髒點」。
+
+    判定邏輯（用 dim 而不是 area，比較不會把細數字誤殺）：
+      ‧ max(w,h) > SPECK_MAX_DIM     → 真正的文字 / 表格線 → 視為「LARGE」
+      ‧ max(w,h) ≤ SPECK_MAX_DIM 且
+        area ∈ [SPECK_MIN_AREA, SPECK_MAX_AREA]
+                                    → 可疑髒點，跑距離檢查
+      ‧ 其他 (太小 / 太大)            → 不動
+
+    可疑髒點若質心 *不在* dilate 過的 LARGE 元件附近 → 視為孤立髒點，清掉。
+    標點符號 (例如 「、」) 因為一定在字旁邊，所以會被保護。
+    """
+    if img.ndim == 3:
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = img
+    h_img, w_img = gray.shape
+
+    scale = max(1.0, h_img / 2200.0)
+    scale_sq = scale * scale
+
+    SPECK_MIN_AREA = int(cfg.iso_speck_min_area * scale_sq)
+    SPECK_MAX_AREA = int(cfg.iso_speck_max_area * scale_sq)
+    SPECK_MAX_DIM = int(cfg.iso_speck_max_dim * scale)
+    NEAR_DIST = int(cfg.iso_near_text_dist * scale)
+
+    _, bw = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+    num, labels, stats, centroids = cv2.connectedComponentsWithStats(bw, connectivity=8)
+    if num <= 1:
+        return img
+
+    # 一次走訪：分類成 LARGE 與 SPECK candidate
+    large_mask = np.zeros_like(bw)
+    speck_candidates = []
+    has_large = False
+    for i in range(1, num):
+        a = int(stats[i, cv2.CC_STAT_AREA])
+        ww = int(stats[i, cv2.CC_STAT_WIDTH])
+        hh = int(stats[i, cv2.CC_STAT_HEIGHT])
+        if max(ww, hh) > SPECK_MAX_DIM:
+            # 任何一邊比 speck 還大 → 視為文字/線
+            large_mask[labels == i] = 255
+            has_large = True
+        elif SPECK_MIN_AREA <= a <= SPECK_MAX_AREA:
+            speck_candidates.append(i)
+
+    if not has_large or not speck_candidates:
+        return img
+
+    # dilate 形成「near-text」遮罩
+    k = max(3, NEAR_DIST * 2 + 1)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k, k))
+    near_text = cv2.dilate(large_mask, kernel)
+
+    # 對每個候選看質心是否在 near-text 內
+    remove_mask = np.zeros_like(bw)
+    removed = 0
+    for i in speck_candidates:
+        cx = int(centroids[i][0])
+        cy = int(centroids[i][1])
+        if 0 <= cy < h_img and 0 <= cx < w_img:
+            if near_text[cy, cx] == 0:
+                remove_mask[labels == i] = 255
+                removed += 1
+
+    if removed == 0:
+        return img
+
+    out = img.copy()
+    if out.ndim == 3:
+        out[remove_mask > 0] = (255, 255, 255)
+    else:
+        out[remove_mask > 0] = 255
     return out
 
 
@@ -292,7 +396,11 @@ def clean_image(img: np.ndarray, cfg: CleanConfig = DEFAULT_CONFIG) -> tuple[np.
     # 4) 旋轉後可能在邊緣帶入小三角形空白，再做一次極輕的去髒 (只清角落)
     final = despeckle(deskewed, cfg)
 
-    # 5) 可選：水平置中
+    # 5) 第二階段：清「離文字遠的中等大小髒點」
+    if cfg.remove_isolated_specks:
+        final = remove_isolated_specks(final, cfg)
+
+    # 6) 可選：水平置中
     if cfg.center_horizontally:
         before = final
         final = center_content_horizontally(final)
