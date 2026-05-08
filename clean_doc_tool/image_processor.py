@@ -82,15 +82,26 @@ def despeckle(img: np.ndarray, cfg: CleanConfig = DEFAULT_CONFIG) -> np.ndarray:
 
     流程：
     1. 灰階化
-    2. Otsu 二值化找出深色像素 (文字 + 髒點都是深色)
+    2. Otsu 二值化找出深色像素 (文字 + 髒點都是深點)
     3. 連通元件分析
-    4. 把面積 ≤ max_speck_area 且 寬/高都 ≤ max_speck_dim 的元件
-       在原圖對應位置塗成「該區附近的背景色」(白)
+    4. 把面積 ≤ eff_max_area 且 寬/高都 ≤ eff_max_dim 的元件
+       在原圖對應位置塗白
+
+    ★ 自動 scale ★
+    cfg.max_speck_area 與 cfg.max_speck_dim 是以 200 DPI A4 (~2200 px 高)
+    為基準的閾值。實際處理時依影像高度自動放大，讓 200/300/600 DPI
+    輸入有一致的視覺去髒效果（不會因高 DPI 反而抓不到大髒點）。
     """
     if img.ndim == 3:
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     else:
         gray = img
+
+    # 自動 scale：以 200 DPI A4 (~2200 px) 為基準
+    h_img = img.shape[0]
+    scale = max(1.0, h_img / 2200.0)
+    eff_max_area = int(cfg.max_speck_area * scale * scale)  # 面積跟 scale 平方
+    eff_max_dim = int(cfg.max_speck_dim * scale)            # 邊長線性
 
     # 二值化：白底黑字 → 反轉成「黑底白前景」方便連通元件分析
     _, bw = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
@@ -105,7 +116,7 @@ def despeckle(img: np.ndarray, cfg: CleanConfig = DEFAULT_CONFIG) -> np.ndarray:
         area = int(stats[i, cv2.CC_STAT_AREA])
         w = int(stats[i, cv2.CC_STAT_WIDTH])
         h = int(stats[i, cv2.CC_STAT_HEIGHT])
-        if area <= cfg.max_speck_area and w <= cfg.max_speck_dim and h <= cfg.max_speck_dim:
+        if area <= eff_max_area and w <= eff_max_dim and h <= eff_max_dim:
             mask[labels == i] = 255
             removed += 1
 
