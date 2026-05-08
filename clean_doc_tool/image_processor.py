@@ -42,6 +42,10 @@ class CleanConfig:
     # 是否強制轉灰階輸出 (False = 保留原色彩)
     force_grayscale: bool = False
 
+    # 是否輸出為 1-bit 純黑白 (適合純文字掃描檔，檔案最小)
+    # True 時會用 Otsu 閾值法把處理後影像 threshold 成純黑白
+    output_bitonal: bool = False
+
 
 DEFAULT_CONFIG = CleanConfig()
 

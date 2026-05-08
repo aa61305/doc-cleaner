@@ -185,6 +185,7 @@ class App(tk.Tk):
         self.jpeg_var = tk.IntVar(value=88)
         self.strength_var = tk.StringVar(value="中度（推薦）")
         self.grayscale_var = tk.BooleanVar(value=False)  # 省記憶體模式
+        self.bitonal_var = tk.BooleanVar(value=False)    # 1-bit 黑白輸出
 
         self.worker: Worker | None = None
         self.msgs: Queue = Queue()
@@ -247,7 +248,14 @@ class App(tk.Tk):
             frame_opts,
             text="省記憶體模式（強制灰階輸出，記憶體用量約 1/3，黑白文件無差別）",
             variable=self.grayscale_var,
-        ).grid(row=1, column=0, columnspan=6, sticky="w", padx=6, pady=(2, 6))
+        ).grid(row=1, column=0, columnspan=6, sticky="w", padx=6, pady=(2, 0))
+
+        # 第三列：1-bit 黑白輸出 (純文字掃描檔最佳，檔案最小)
+        ttk.Checkbutton(
+            frame_opts,
+            text="輸出 1-bit 黑白（純文字檔最佳，檔案最小，會自動覆蓋 JPEG 品質設定）",
+            variable=self.bitonal_var,
+        ).grid(row=2, column=0, columnspan=6, sticky="w", padx=6, pady=(0, 6))
 
         # 按鈕
         frame_btn = ttk.Frame(self)
@@ -344,13 +352,16 @@ class App(tk.Tk):
     def _make_config(self) -> CleanConfig:
         s = self.strength_var.get()
         force_gray = bool(self.grayscale_var.get())
+        bitonal = bool(self.bitonal_var.get())
+        # 黑白輸出 = 必定先轉灰階，所以強制灰階旗標自動為 True
+        if bitonal:
+            force_gray = True
+        kwargs = dict(force_grayscale=force_gray, output_bitonal=bitonal)
         if s.startswith("輕度"):
-            return CleanConfig(max_speck_area=4, max_speck_dim=2,
-                               force_grayscale=force_gray)
+            return CleanConfig(max_speck_area=4, max_speck_dim=2, **kwargs)
         if s.startswith("較強"):
-            return CleanConfig(max_speck_area=18, max_speck_dim=4,
-                               force_grayscale=force_gray)
-        return CleanConfig(force_grayscale=force_gray)  # 中度
+            return CleanConfig(max_speck_area=18, max_speck_dim=4, **kwargs)
+        return CleanConfig(**kwargs)  # 中度
 
     # --- 訊息處理 --- #
 
