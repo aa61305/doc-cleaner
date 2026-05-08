@@ -46,6 +46,9 @@ class CleanConfig:
     # True 時會用 Otsu 閾值法把處理後影像 threshold 成純黑白
     output_bitonal: bool = False
 
+    # 是否把內容水平置中 (掃描歪斜或邊緣留白不對稱時有用)
+    center_horizontally: bool = False
+
 
 DEFAULT_CONFIG = CleanConfig()
 
@@ -206,6 +209,50 @@ def rotate_image(img: np.ndarray, angle_deg: float, bg_value=255) -> np.ndarray:
     )
 
 
+# --------------------------- 水平置中 --------------------------- #
+
+
+def center_content_horizontally(img: np.ndarray, dark_threshold: int = 200,
+                                min_shift: int = 3) -> np.ndarray:
+    """
+    把影像中的「內容」(非白色像素) 在水平方向上置中。
+
+    流程：
+      1. 找出所有「有內容」的欄 (該欄存在像素值 < dark_threshold)
+      2. 取最左、最右形成內容 bounding box
+      3. 計算把這個 bounding box 平移到頁面正中央所需的水平位移
+      4. 用 cv2.warpAffine 平移整張圖 (背景填白)
+
+    若位移量 < min_shift 像素 (差異微小)，則不動。
+    """
+    if img.ndim == 3:
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = img
+    h, w = gray.shape
+    # 找有內容的欄
+    col_has_content = (gray < dark_threshold).any(axis=0)
+    if not col_has_content.any():
+        return img  # 全白頁，不動
+
+    left = int(np.argmax(col_has_content))
+    right = w - int(np.argmax(col_has_content[::-1]))
+    content_w = right - left
+    new_left = (w - content_w) // 2
+    dx = new_left - left
+    if abs(dx) < min_shift:
+        return img  # 差異太小不動
+
+    M = np.array([[1, 0, dx], [0, 1, 0]], dtype=np.float32)
+    border = (255, 255, 255) if img.ndim == 3 else 255
+    return cv2.warpAffine(
+        img, M, (w, h),
+        flags=cv2.INTER_NEAREST,  # 純水平整數平移用 NEAREST 即可，不會糊
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=border,
+    )
+
+
 # --------------------------- 完整管線 --------------------------- #
 
 
@@ -233,6 +280,12 @@ def clean_image(img: np.ndarray, cfg: CleanConfig = DEFAULT_CONFIG) -> tuple[np.
 
     # 4) 旋轉後可能在邊緣帶入小三角形空白，再做一次極輕的去髒 (只清角落)
     final = despeckle(deskewed, cfg)
+
+    # 5) 可選：水平置中
+    if cfg.center_horizontally:
+        before = final
+        final = center_content_horizontally(final)
+        info["centered"] = (final is not before)
 
     return final, info
 

@@ -186,6 +186,7 @@ class App(tk.Tk):
         self.strength_var = tk.StringVar(value="中度（推薦）")
         self.grayscale_var = tk.BooleanVar(value=False)  # 省記憶體模式
         self.bitonal_var = tk.BooleanVar(value=False)    # 1-bit 黑白輸出
+        self.center_var = tk.BooleanVar(value=False)     # 水平置中
 
         self.worker: Worker | None = None
         self.msgs: Queue = Queue()
@@ -233,7 +234,7 @@ class App(tk.Tk):
 
         ttk.Label(frame_opts, text="PDF 解析度 (DPI)：").grid(row=0, column=2, sticky="w", padx=(20, 6))
         ttk.Spinbox(
-            frame_opts, from_=100, to=400, increment=50,
+            frame_opts, from_=100, to=600, increment=50,
             textvariable=self.dpi_var, width=6,
         ).grid(row=0, column=3, sticky="w")
 
@@ -255,7 +256,14 @@ class App(tk.Tk):
             frame_opts,
             text="輸出 1-bit 黑白（純文字檔最佳，檔案最小，會自動覆蓋 JPEG 品質設定）",
             variable=self.bitonal_var,
-        ).grid(row=2, column=0, columnspan=6, sticky="w", padx=6, pady=(0, 6))
+        ).grid(row=2, column=0, columnspan=6, sticky="w", padx=6, pady=(0, 0))
+
+        # 第四列：水平置中
+        ttk.Checkbutton(
+            frame_opts,
+            text="頁面左右置中（內容偏向某一邊時自動平移到正中央）",
+            variable=self.center_var,
+        ).grid(row=3, column=0, columnspan=6, sticky="w", padx=6, pady=(0, 6))
 
         # 按鈕
         frame_btn = ttk.Frame(self)
@@ -353,10 +361,15 @@ class App(tk.Tk):
         s = self.strength_var.get()
         force_gray = bool(self.grayscale_var.get())
         bitonal = bool(self.bitonal_var.get())
+        center = bool(self.center_var.get())
         # 黑白輸出 = 必定先轉灰階，所以強制灰階旗標自動為 True
         if bitonal:
             force_gray = True
-        kwargs = dict(force_grayscale=force_gray, output_bitonal=bitonal)
+        kwargs = dict(
+            force_grayscale=force_gray,
+            output_bitonal=bitonal,
+            center_horizontally=center,
+        )
         if s.startswith("輕度"):
             return CleanConfig(max_speck_area=4, max_speck_dim=2, **kwargs)
         if s.startswith("較強"):
