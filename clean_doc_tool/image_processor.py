@@ -49,6 +49,13 @@ class CleanConfig:
     # 是否把內容水平置中 (掃描歪斜或邊緣留白不對稱時有用)
     center_horizontally: bool = False
 
+    # 強制置中：忽略「位移過小就不動」的門檻，只要有內容就拉到正中央
+    # (搭配 center_horizontally=True 使用；單獨設 True 也視為要置中)
+    center_force: bool = False
+
+    # 是否執行去髒點 (despeckle + 孤立髒點)。False = 只做轉正/置中，完全不動內容
+    do_despeckle: bool = True
+
     # 是否啟用「離文字遠的孤立髒點清除」第二階段
     # 用 dilate(LARGE 元件) 形成「near-text」區域，落在外面的小元件視為髒點
     remove_isolated_specks: bool = True
@@ -70,6 +77,24 @@ class CleanConfig:
     # 基本 despeckle 的 dim 絕對上限 (保護細字細線)
     # 即使 auto-scale 也不會超過這個值
     max_speck_dim_cap: int = 4
+
+    # ★ 第一階段去髒的「尊重上下文」保護 (預設開) ★
+    # 解決「細字 / 細線被連同髒點一起清掉」的問題。
+    # 原本第一階段只要元件夠小就無條件清；但細字的小筆畫、斷裂的
+    # 細線段也很小，旁邊卻一定有其他內容 → 用下列兩道保護避免誤殺：
+    protect_near_text: bool = True
+
+    # (a) 鄰近保護：小元件若緊貼「字/線主體」(大元件) 就保留。
+    #     200 DPI 基準距離，會隨 DPI scale。4 → 600 DPI 下 ~12px。
+    #     設大一點以涵蓋「剛被二值化切斷、離筆畫 2-4px 的字部件/點」，
+    #     符合「寧可少清髒點，也別傷字線」的取捨。孤立髒點離內容通常
+    #     遠在數十 px 以上，不受影響。
+    protect_near_dist: int = 4
+
+    # (b) 細物保護：厚度 ≤ 此值 (px，200 DPI 基準，會 scale) 的細長碎片
+    #     視為細線 / 細筆畫，一律保留。1 → 600 DPI 下保護 ≤3px 厚的細物。
+    #     真髒點通常 ≥2px 厚且近似方形，所以不太會被這條規則漏放。
+    protect_thin_px: int = 1
 
 
 DEFAULT_CONFIG = CleanConfig()
@@ -106,8 +131,15 @@ def despeckle(img: np.ndarray, cfg: CleanConfig = DEFAULT_CONFIG) -> np.ndarray:
     1. 灰階化
     2. Otsu 二值化找出深色像素 (文字 + 髒點都是深點)
     3. 連通元件分析
-    4. 把面積 ≤ eff_max_area 且 寬/高都 ≤ eff_max_dim 的元件
+    4. 把面積 ≤ eff_max_area 且 寬/高都 ≤ eff_max_dim 的「孤立小元件」
        在原圖對應位置塗白
+
+    ★ 尊重上下文的保護 (cfg.protect_near_text，預設開) ★
+    細字的小筆畫、斷裂的細線段也很小，但旁邊一定有其他內容。為避免把它們
+    當髒點誤殺，移除前再過兩道保護：
+      (a) 鄰近保護：質心落在「字/線主體 (大元件) 膨脹區」內 → 保留。
+      (b) 細物保護：厚度 (min(w,h)) ≤ eff_thin → 視為細線/細筆畫 → 保留。
+    只有「又小、又離內容遠、又不是細長」的元件才會被當成真髒點清掉。
 
     ★ 自動 scale ★
     cfg.max_speck_area 與 cfg.max_speck_dim 是以 200 DPI A4 (~2200 px 高)
@@ -132,16 +164,48 @@ def despeckle(img: np.ndarray, cfg: CleanConfig = DEFAULT_CONFIG) -> np.ndarray:
     # 連通元件
     num, labels, stats, _ = cv2.connectedComponentsWithStats(bw, connectivity=8)
 
-    # 收集要移除的小元件
+    # --- 尊重上下文的保護：先備好「字/線主體」的膨脹區 --- #
+    eff_thin = max(1, int(round(cfg.protect_thin_px * scale)))
+    near_text = None
+    if cfg.protect_near_text:
+        # 「主體」= 任一邊大於 eff_max_dim 的前景 (字、線、表格)。
+        big_mask = np.zeros_like(bw)
+        has_big = False
+        for i in range(1, num):
+            w = int(stats[i, cv2.CC_STAT_WIDTH])
+            h = int(stats[i, cv2.CC_STAT_HEIGHT])
+            if max(w, h) > eff_max_dim:
+                big_mask[labels == i] = 255
+                has_big = True
+        if has_big:
+            pad = max(1, int(round(cfg.protect_near_dist * scale)))
+            k = pad * 2 + 1
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k, k))
+            near_text = cv2.dilate(big_mask, kernel)
+
+    # 收集要移除的小元件 (套用兩道保護)
     mask = np.zeros_like(bw)
     removed = 0
     for i in range(1, num):
         area = int(stats[i, cv2.CC_STAT_AREA])
         w = int(stats[i, cv2.CC_STAT_WIDTH])
         h = int(stats[i, cv2.CC_STAT_HEIGHT])
-        if area <= eff_max_area and w <= eff_max_dim and h <= eff_max_dim:
-            mask[labels == i] = 255
-            removed += 1
+        if not (area <= eff_max_area and w <= eff_max_dim and h <= eff_max_dim):
+            continue
+        # (b) 細物保護：厚度極薄 → 細線/細筆畫，保留
+        if cfg.protect_near_text and min(w, h) <= eff_thin:
+            continue
+        # (a) 鄰近保護：元件「任一像素」觸及字/線主體膨脹區 → 保留。
+        #     用元件像素 (而非質心) 判定，邊緣貼字的字部件也救得到。
+        if near_text is not None:
+            x0 = int(stats[i, cv2.CC_STAT_LEFT])
+            y0 = int(stats[i, cv2.CC_STAT_TOP])
+            sub_lab = labels[y0:y0 + h, x0:x0 + w]
+            sub_near = near_text[y0:y0 + h, x0:x0 + w]
+            if np.any((sub_lab == i) & (sub_near > 0)):
+                continue
+        mask[labels == i] = 255
+        removed += 1
 
     if removed == 0:
         return img
@@ -384,9 +448,13 @@ def clean_image(img: np.ndarray, cfg: CleanConfig = DEFAULT_CONFIG) -> tuple[np.
     if cfg.force_grayscale and img.ndim == 3:
         img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-    # 1) 去髒點
-    cleaned = despeckle(img, cfg)
-    info["despeckled"] = True
+    # 1) 去髒點 (可關閉：do_despeckle=False 時完全不動內容，只做轉正/置中)
+    if cfg.do_despeckle:
+        cleaned = despeckle(img, cfg)
+        info["despeckled"] = True
+    else:
+        cleaned = img
+        info["despeckled"] = False
 
     # 2) 估算傾斜角度
     angle = estimate_skew_angle(cleaned, cfg)
@@ -396,16 +464,19 @@ def clean_image(img: np.ndarray, cfg: CleanConfig = DEFAULT_CONFIG) -> tuple[np.
     deskewed = rotate_image(cleaned, angle)
 
     # 4) 旋轉後可能在邊緣帶入小三角形空白，再做一次極輕的去髒 (只清角落)
-    final = despeckle(deskewed, cfg)
+    if cfg.do_despeckle:
+        final = despeckle(deskewed, cfg)
+        # 5) 第二階段：清「離文字遠的中等大小髒點」
+        if cfg.remove_isolated_specks:
+            final = remove_isolated_specks(final, cfg)
+    else:
+        final = deskewed
 
-    # 5) 第二階段：清「離文字遠的中等大小髒點」
-    if cfg.remove_isolated_specks:
-        final = remove_isolated_specks(final, cfg)
-
-    # 6) 可選：水平置中
-    if cfg.center_horizontally:
+    # 6) 可選：水平置中 (center_force=True 視同要置中，且忽略最小位移門檻)
+    if cfg.center_horizontally or cfg.center_force:
         before = final
-        final = center_content_horizontally(final)
+        min_shift = 1 if cfg.center_force else 3
+        final = center_content_horizontally(final, min_shift=min_shift)
         info["centered"] = (final is not before)
 
     return final, info

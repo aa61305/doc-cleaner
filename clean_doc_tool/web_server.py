@@ -178,10 +178,17 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
       <label>去髒強度
         <select id="strength" name="strength">
+          <option value="none">不去髒 (只轉正／置中)</option>
           <option value="light">輕度 (保守)</option>
           <option value="medium" selected>中度 (推薦)</option>
           <option value="strong">較強</option>
         </select>
+      </label>
+
+      <label style="display:flex; align-items:center; gap:8px;">
+        <input type="checkbox" id="center" name="center" value="1"
+               style="width:auto; margin:0; transform:scale(1.3);">
+        強制頁面左右置中
       </label>
 
       <label>PDF 解析度 (DPI)
@@ -238,6 +245,7 @@ f.addEventListener('submit', async (e) => {
   const fd = new FormData();
   fd.append('file', fileEl.files[0]);
   fd.append('strength', document.getElementById('strength').value);
+  fd.append('center', document.getElementById('center').checked ? '1' : '0');
   fd.append('dpi', document.getElementById('dpi').value);
 
   // 1) 上傳並啟動 job
@@ -311,12 +319,17 @@ def _local_ip() -> str:
         return "127.0.0.1"
 
 
-def _make_config(strength: str) -> CleanConfig:
+def _make_config(strength: str, center: bool = False) -> CleanConfig:
+    # center=True → 強制左右置中 (忽略最小位移門檻)
+    kwargs = dict(center_horizontally=center, center_force=center)
+    if strength == "none":
+        # 不去髒：只做轉正 (＋可選置中)，完全不動內容
+        return CleanConfig(do_despeckle=False, **kwargs)
     if strength == "light":
-        return CleanConfig(max_speck_area=4, max_speck_dim=2)
+        return CleanConfig(max_speck_area=4, max_speck_dim=2, **kwargs)
     if strength == "strong":
-        return CleanConfig(max_speck_area=18, max_speck_dim=4)
-    return CleanConfig()  # medium
+        return CleanConfig(max_speck_area=18, max_speck_dim=4, **kwargs)
+    return CleanConfig(**kwargs)  # medium
 
 
 def _set_status(job: str, **kw):
@@ -384,6 +397,7 @@ def upload():
         return f"不支援的副檔名：{ext}", 400
 
     strength = request.form.get("strength", "medium")
+    center = request.form.get("center", "0") == "1"
     try:
         dpi = int(request.form.get("dpi", "200"))
     except ValueError:
@@ -405,7 +419,7 @@ def upload():
             "ext": ext,
         }
 
-    cfg = _make_config(strength)
+    cfg = _make_config(strength, center=center)
     th = threading.Thread(
         target=_process_in_bg,
         args=(job, src_path, out_path, ext, cfg, dpi),

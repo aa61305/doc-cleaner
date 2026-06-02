@@ -228,7 +228,7 @@ class App(tk.Tk):
         ttk.Label(frame_opts, text="去髒強度：").grid(row=0, column=0, sticky="w", padx=6, pady=4)
         cb = ttk.Combobox(
             frame_opts, textvariable=self.strength_var, state="readonly", width=18,
-            values=["輕度（保守）", "中度（推薦）", "較強"],
+            values=["不去髒（只轉正）", "輕度（保守）", "中度（推薦）", "較強"],
         )
         cb.grid(row=0, column=1, sticky="w", padx=4)
 
@@ -261,7 +261,7 @@ class App(tk.Tk):
         # 第四列：水平置中
         ttk.Checkbutton(
             frame_opts,
-            text="頁面左右置中（內容偏向某一邊時自動平移到正中央）",
+            text="強制頁面左右置中（內容一律平移到正中央）",
             variable=self.center_var,
         ).grid(row=3, column=0, columnspan=6, sticky="w", padx=6, pady=(0, 6))
 
@@ -369,7 +369,10 @@ class App(tk.Tk):
             force_grayscale=force_gray,
             output_bitonal=bitonal,
             center_horizontally=center,
+            center_force=center,  # 勾選即強制置中 (忽略最小位移門檻)
         )
+        if s.startswith("不去髒"):
+            return CleanConfig(do_despeckle=False, **kwargs)
         if s.startswith("輕度"):
             return CleanConfig(max_speck_area=4, max_speck_dim=2, **kwargs)
         if s.startswith("較強"):
