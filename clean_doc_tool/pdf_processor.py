@@ -146,8 +146,12 @@ def process_pdf(
 
             # ---- 4) 編碼 ----
             if cfg.output_bitonal:
-                # 1-bit PNG: 純文字掃描檔最佳
-                img_bytes = _to_bitonal_png_bytes(cleaned)
+                # 1-bit PNG: 純文字掃描檔最佳。
+                # dilate 只為「補回明顯旋轉造成的筆畫變細」；幾乎沒旋轉
+                # (|angle| < 0.5°) 時不補，否則乾淨的字會無端變粗 (變粗體)。
+                angle = info.get("skew_angle", 0.0)
+                di = 1 if abs(angle) >= 0.5 else 0
+                img_bytes = _to_bitonal_png_bytes(cleaned, dilate_iter=di)
                 tag = "1-bit"
             else:
                 buf = io.BytesIO()

@@ -372,8 +372,14 @@ def estimate_skew_angle(img: np.ndarray, cfg: CleanConfig = DEFAULT_CONFIG) -> f
     return best_angle
 
 
-def rotate_image(img: np.ndarray, angle_deg: float, bg_value=255) -> np.ndarray:
-    """以白色填充背景旋轉影像，保留原始尺寸 (不會放大畫布)。"""
+def rotate_image(img: np.ndarray, angle_deg: float, bg_value=255,
+                 nearest: bool = False) -> np.ndarray:
+    """以白色填充背景旋轉影像，保留原始尺寸 (不會放大畫布)。
+
+    nearest=True 時用 INTER_NEAREST：不產生抗鋸齒灰階，後續 Otsu 二值化
+    不會把灰邊吃成黑色 → 1-bit 黑白輸出不會因旋轉而「字變粗」。
+    彩色 / 灰階 JPEG 輸出則用 LINEAR (預設)，邊緣較平滑。
+    """
     if abs(angle_deg) < 0.05:  # 小於 0.05 度就不旋轉了
         return img
 
@@ -382,9 +388,7 @@ def rotate_image(img: np.ndarray, angle_deg: float, bg_value=255) -> np.ndarray:
     border = (bg_value, bg_value, bg_value) if img.ndim == 3 else bg_value
     return cv2.warpAffine(
         img, M, (w, h),
-        # 改用 LINEAR：對 1-bit 輸出比 CUBIC 友善
-        # (CUBIC 產生較多反鋸齒灰階，閾值化後容易把字邊切細)
-        flags=cv2.INTER_LINEAR,
+        flags=cv2.INTER_NEAREST if nearest else cv2.INTER_LINEAR,
         borderMode=cv2.BORDER_CONSTANT,
         borderValue=border,
     )
@@ -460,8 +464,8 @@ def clean_image(img: np.ndarray, cfg: CleanConfig = DEFAULT_CONFIG) -> tuple[np.
     angle = estimate_skew_angle(cleaned, cfg)
     info["skew_angle"] = round(angle, 3)
 
-    # 3) 旋轉轉正
-    deskewed = rotate_image(cleaned, angle)
+    # 3) 旋轉轉正 (1-bit 輸出用 NEAREST，避免抗鋸齒讓字變粗)
+    deskewed = rotate_image(cleaned, angle, nearest=cfg.output_bitonal)
 
     # 4) 旋轉後可能在邊緣帶入小三角形空白，再做一次極輕的去髒 (只清角落)
     if cfg.do_despeckle:
