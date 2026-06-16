@@ -44,19 +44,22 @@ def _is_effectively_grayscale(img: Image.Image, sample_size: int = 64) -> bool:
     return max(int(rg.max()), int(gb.max()), int(rb.max())) <= 5
 
 
-def _to_bitonal_png_bytes(img: Image.Image, dilate_iter: int = 1) -> bytes:
+def _to_bitonal_png_bytes(img: Image.Image, dilate_iter: int = 0) -> bytes:
     """
     灰階/RGB 影像閾值化成 1-bit 黑白，存 PNG bytes。
 
     流程：
       1. Otsu 自動閾值化
-      2. 膨脹筆畫 (= 侵蝕白色背景) dilate_iter 次，
-         補回旋轉造成的筆畫變細
+      2. (可選) 膨脹筆畫 (= 侵蝕白色背景) dilate_iter 次
 
     dilate_iter:
-      0 = 不補 (字會略細，但檔案最小)
-      1 = 補 1 px (預設，字保持原始厚度)
-      2 = 補 2 px (字會比原始略粗)
+      0 = 不膨脹 (預設)，字保持原始厚度
+      1 = 補 1 px (字會變粗一圈)
+      2 = 補 2 px (字會更粗)
+
+    ★ 預設 0 ★
+    轉正已改用 INTER_NEAREST，筆畫面積守恆、不會變細，因此不需要也
+    不應該再 dilate；任何膨脹都只會讓字看起來變粗 (變粗體)。
     """
     if img.mode != "L":
         gray = img.convert("L")
@@ -147,11 +150,10 @@ def process_pdf(
             # ---- 4) 編碼 ----
             if cfg.output_bitonal:
                 # 1-bit PNG: 純文字掃描檔最佳。
-                # dilate 只為「補回明顯旋轉造成的筆畫變細」；幾乎沒旋轉
-                # (|angle| < 0.5°) 時不補，否則乾淨的字會無端變粗 (變粗體)。
-                angle = info.get("skew_angle", 0.0)
-                di = 1 if abs(angle) >= 0.5 else 0
-                img_bytes = _to_bitonal_png_bytes(cleaned, dilate_iter=di)
+                # 不做 dilate 補筆畫：轉正已改用 INTER_NEAREST，筆畫面積守恆、
+                # 不會變細，任何 dilate 都只會讓字變粗 (且歪斜越大、旋轉觸發越
+                # 頻繁，變粗越明顯 → 客戶反映「歪斜大幾乎都變粗字」)。
+                img_bytes = _to_bitonal_png_bytes(cleaned, dilate_iter=0)
                 tag = "1-bit"
             else:
                 buf = io.BytesIO()
